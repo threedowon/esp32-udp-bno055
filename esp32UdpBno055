@@ -1,0 +1,126 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <WiFi.h>
+#include <AsyncUDP.h>
+#include <ArduinoJson.h>
+
+// WiFi 정보
+#define WIFI_NETWORK "3DOWON"
+#define WIFI_PASSWORD "01041150878"
+#define WIFI_TIMEOUT_MS 20000
+
+// UDP 서버 정보
+#define PORT 1234
+
+// 전송할 PC 두 대의 IP (고정 IP로 설정하는 게 안정적임)
+IPAddress PC1(192,168,0,88);   // 첫 번째 PC
+IPAddress PC2(192,168,0,89);   // 두 번째 PC
+
+// BNO055 객체
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
+
+// UDP 클라이언트
+AsyncUDP udpClient;
+
+// 값 저장용
+float x = 0;
+float y = 0;
+float z = 0;
+
+unsigned long timer = 0;
+String json;
+
+void setup() {
+  Serial.begin(115200);
+
+  connectToWiFi();
+
+  Wire.begin();
+
+  if (!bno.begin()) {
+    Serial.println("BNO055 not detected. Check wiring or I2C address!");
+    while (1);
+  }
+
+  delay(1000);
+  bno.setExtCrystalUse(true);
+
+  Serial.println("BNO055 ready!");
+}
+
+void loop() {
+  sensors_event_t orientationData;
+  bno.getEvent(&orientationData, Adafruit_BNO055::VECTOR_EULER);
+
+  if ((millis() - timer) > 100) { // 0.1초마다 전송
+    timer = millis();
+
+    // BNO055의 Euler 각도
+    x = orientationData.orientation.x; // Heading (Yaw)
+    y = orientationData.orientation.y; // Roll
+    z = orientationData.orientation.z; // Pitch
+
+    Serial.print("Yaw: ");
+    Serial.print(x);
+    Serial.print(" Roll: ");
+    Serial.print(y);
+    Serial.print(" Pitch: ");
+    Serial.println(z);
+
+    json = GetJSONString("hand", x, y, z);
+    Serial.println(json);
+
+    UDPSendData(json);
+  }
+}
+
+// ================= WiFi 연결 =================
+void connectToWiFi() {
+  Serial.print("Connecting to WiFi");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_NETWORK, WIFI_PASSWORD);
+  unsigned long startAttemptTime = millis();
+
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - startAttemptTime < WIFI_TIMEOUT_MS) {
+    Serial.print(".");
+    delay(100);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Failed to connect to WiFi");
+  } else {
+    Serial.println("Connected to WiFi");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+  }
+}
+
+// ================= JSON 변환 =================
+String GetJSONString(String sensorName, float x, float y, float z) {
+  StaticJsonDocument<512> doc;
+  doc["name"] = sensorName;
+  doc["yaw"] = x;   // heading
+  doc["roll"] = y;
+  doc["pitch"] = z;
+
+  char buffer[512];
+  serializeJson(doc, buffer);
+
+  return String(buffer);
+}
+
+// ================= UDP =================
+void UDPSendData(String message) {
+  char charBuffer[512];
+  message.toCharArray(charBuffer, 512);
+
+  // PC1로 전송
+  udpClient.writeTo((uint8_t*)charBuffer, strlen(charBuffer), PC1, PORT);
+  Serial.println("Sent to PC1");
+
+  // PC2로 전송
+  udpClient.writeTo((uint8_t*)charBuffer, strlen(charBuffer), PC2, PORT);
+  Serial.println("Sent to PC2");
+}
